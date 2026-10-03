@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownRight, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight,
   Heart, Menu, Minus, Plus, Search, ShoppingBag, SlidersHorizontal, X,
