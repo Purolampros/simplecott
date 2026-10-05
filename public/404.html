@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Redirecting to SIMPLECOTT</title>
+    <script>
+      const base = '/simplecott';
+      const route = location.pathname.startsWith(base)
+        ? location.pathname.slice(base.length) + location.search + location.hash
+        : '/';
+      location.replace(`${base}/?p=${encodeURIComponent(route || '/')}`);
+    </script>
+  </head>
+  <body>
+    <p>Redirecting to SIMPLECOTT…</p>
+  </body>
+</html>
