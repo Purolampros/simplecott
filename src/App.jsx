@@ -245,7 +245,41 @@ function ProductGrid({ items, emptyText = 'No pieces found. Try changing your fi
   ) : <div className="empty-state"><p>{emptyText}</p><Link className="button button-dark" to="/shop">Browse all clothing <ArrowRight size={16} /></Link></div>;
 }
 
+function HomeSection({ id, title, description, openSection, onToggle, children }) {
+  const isOpen = openSection === id;
+  return (
+    <div id={id} className={`home-disclosure ${isOpen ? 'is-open' : ''}`}>
+      <h2 className="home-disclosure-heading page-pad">
+        <button
+          type="button"
+          id={`${id}-toggle`}
+          className="home-disclosure-toggle"
+          aria-expanded={isOpen}
+          aria-controls={`${id}-panel`}
+          onClick={() => onToggle(id)}
+        >
+          <span className="home-disclosure-label"><span className="home-disclosure-title">{title}</span><span className="home-disclosure-description">{description}</span></span>
+          <span className="home-disclosure-icon" aria-hidden="true">{isOpen ? <Minus /> : <Plus />}</span>
+        </button>
+      </h2>
+      <div id={`${id}-panel`} role="region" aria-labelledby={`${id}-toggle`} hidden={!isOpen}>
+        {isOpen ? children : null}
+      </div>
+    </div>
+  );
+}
+
 function Home() {
+  const location = useLocation();
+  const [openSection, setOpenSection] = useState(null);
+
+  useEffect(() => {
+    if (location.hash === '#new-arrivals') setOpenSection('new-arrivals');
+  }, [location.hash]);
+
+  const toggleSection = (id) => setOpenSection((current) => current === id ? null : id);
+  const sectionProps = { openSection, onToggle: toggleSection };
+
   return (
     <div className="home-page">
       <section className="home-hero">
@@ -258,9 +292,12 @@ function Home() {
           <div className="hero-actions"><Link to="/shop?sort=new" className="button button-light">Shop new arrivals <ArrowRight size={16} /></Link><Link to="/collections" className="button button-outline-light">Explore collection</Link></div>
         </div>
         <div className="hero-index"><span>01</span><span className="hero-index-line" /><span>THE EVERYDAY, RECONSIDERED</span></div>
-        <a href="#new-arrivals" className="hero-scroll" aria-label="Scroll to new arrivals"><ArrowDownRight /></a>
+        <a href="#new-arrivals" className="hero-scroll" aria-label="Open and scroll to new arrivals" onClick={() => setOpenSection('new-arrivals')}><ArrowDownRight /></a>
       </section>
 
+      <div className="home-browse-intro page-pad"><span>EXPLORE SIMPLECOTT</span><p>Take a look, one section at a time. Tap a heading to open or close it.</p></div>
+
+      <HomeSection id="shop-categories" title="Shop by category" description="Find the pieces that fit your everyday." {...sectionProps}>
       <section className="category-section page-pad">
         <SectionTitle title="Made to move with you." detail="The pieces that make getting dressed easy." />
         <div className="category-ribbon">
@@ -272,12 +309,16 @@ function Home() {
           ))}
         </div>
       </section>
+      </HomeSection>
 
-      <section id="new-arrivals" className="arrivals-section page-pad">
+      <HomeSection id="new-arrivals" title="New arrivals" description="The latest pieces, just landed." {...sectionProps}>
+      <section className="arrivals-section page-pad">
         <SectionTitle title="Just landed." detail="New pieces. No unnecessary noise." to="/shop?sort=new" link="Shop new arrivals" />
         <ProductGrid items={products.slice(0, 6)} />
       </section>
+      </HomeSection>
 
+      <HomeSection id="everyday-lookbook" title="The everyday lookbook" description="A closer look at the everyday uniform." {...sectionProps}>
       <section className="lookbook-section">
         <div className="lookbook-image-wrap"><img src="https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=1800&q=85" alt="Everyday menswear worn with an easy, confident silhouette" loading="lazy" /><span className="image-caption">SC—26 / ON THE MOVE</span></div>
         <div className="lookbook-copy">
@@ -287,29 +328,38 @@ function Home() {
           <div className="lookbook-product-note"><span className="note-dot" /> THE EVERYDAY UNIFORM <span>SHIRTS · LAYERS · ESSENTIALS</span></div>
         </div>
       </section>
+      </HomeSection>
 
+      <HomeSection id="season-collection" title="This season’s collection" description="Built for the city. Designed for everywhere." {...sectionProps}>
       <section className="season-banner">
         <img src="https://images.unsplash.com/photo-1523398002811-999ca8dec234?auto=format&fit=crop&w=2200&q=85" alt="Layered pieces from the Simplecott Autumn collection" loading="lazy" />
         <div className="season-shade" />
         <div className="season-copy"><span className="season-brand">SIMPLECOTT <b>/</b> AUTUMN 2026</span><h2>Built for the city.<br />Designed for everywhere.</h2><Link to="/collections" className="button button-light">Explore the collection <ArrowRight size={16} /></Link></div>
         <span className="season-caption">A NEW SEASON IN GOOD FORM.</span>
       </section>
+      </HomeSection>
 
+      <HomeSection id="best-sellers" title="Best sellers" description="Everyday favourites, on repeat." {...sectionProps}>
       <section className="bestseller-section page-pad">
         <SectionTitle title="The ones you come back to." detail="Everyday favourites, on repeat." to="/shop" />
         <ProductGrid items={products.filter((product) => product.bestSeller).slice(0, 4)} />
       </section>
+      </HomeSection>
 
+      <HomeSection id="our-philosophy" title="Our philosophy" description="Less noise. More style." {...sectionProps}>
       <section className="manifesto-section">
         <div className="manifesto-word">LESS NOISE.<br /><span>MORE STYLE.</span></div>
         <div className="manifesto-copy"><p>We believe what you wear should feel like an extension of who you are. No noise. No fuss. Just well-considered pieces that work hard, wear easy and feel right from day one.</p><Link to="/about" className="text-action">A little about us <ArrowRight size={17} /></Link></div>
         <div className="manifesto-mark">S<span>.</span>C</div>
       </section>
+      </HomeSection>
 
+      <HomeSection id="style-inspiration" title="Find your everyday" description="Good clothes have places to be." {...sectionProps}>
       <section className="home-lower-pair">
         <Link className="lower-panel lower-panel-image" to="/collections"><img src="https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=1400&q=85" alt="A city look, worn your own way" loading="lazy" /><span>Find your everyday <ArrowUpRightIcon /></span></Link>
         <div className="lower-panel lower-panel-copy"><h2>GET DRESSED.<br />GET OUT THERE.</h2><p>Good clothes have places to be.</p><Link className="text-action" to="/shop">Find your next favourite <ArrowRight size={17} /></Link></div>
       </section>
+      </HomeSection>
     </div>
   );
 }
