@@ -2,6 +2,12 @@
 
 SIMPLECOTT contemporary menswear ecommerce storefront.
 
+## Homepage browsing
+
+The welcome banner stays visible, while the seven sections below it start collapsed. Select a section heading to reveal its content; opening another section closes the previous one. Select the open heading again to collapse it. These controls also work with Tab, Enter, and Space.
+
+The welcome banner's down arrow opens New Arrivals and scrolls to it. The `#new-arrivals` link also opens that section directly. Shop, Collections, and the other menu links still navigate to their separate pages.
+
 ## Local development
 
 Requires Node.js 20 or later.
