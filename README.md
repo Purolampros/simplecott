@@ -2,6 +2,12 @@
 
 SIMPLECOTT contemporary menswear ecommerce storefront.
 
+## Pages and navigation
+
+Each page displays separately rather than stacking shop, collections, and brand content on the homepage. Use the header to switch between Home (`/`), Shop (`/shop`), New Arrivals (`/shop?sort=new`), Collections (`/collections`), About (`/about`), and Sale (`/shop?sale=true`). Category filters live on the Shop page. Product details, saved pieces, bag, and demo checkout also have their own routes.
+
+The homepage contains the introductory hero only, followed by the shared footer. Netlify serves direct page links and refreshed routes through the SPA fallback in `public/_redirects`.
+
 ## Local development
 
 Requires Node.js 20 or later.
