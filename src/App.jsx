@@ -3,6 +3,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -23,6 +24,7 @@ import {
 } from "lucide-react";
 import {
   Link,
+  Navigate,
   NavLink,
   Route,
   Routes,
@@ -31,42 +33,236 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { categories, collections, naira, products } from "./data.js";
+import {
+  categories,
+  collections,
+  naira,
+  products,
+  traditionalWear,
+} from "./data.js";
 import { supabase } from "./supabaseClient.js";
 
-const PRODUCT_TABLE = "poduct";
+const PRODUCT_TABLE_CANDIDATES = ["poduct", "product", "products"];
+const OWNER_WHATSAPP_NUMBER = (
+  import.meta.env.VITE_OWNER_WHATSAPP_NUMBER || "+2349134437567"
+).replace(/\D/g, "");
+const ADMIN_ALLOWLIST = (import.meta.env.VITE_ADMIN_ALLOWLIST || "rabiukehindeilesanmi@gmail.com")
+  .split(",")
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 
-const normalizeProduct = (row) => ({
-  id: row.id,
-  name: row.name,
-  category: row.category,
-  price: Number(row.price || 0),
-  colorNames: Array.isArray(row.color_names) ? row.color_names : [],
-  colors: Array.isArray(row.colors) ? row.colors : [],
-  sizes: Array.isArray(row.sizes) ? row.sizes : [],
-  badge: row.badge || "",
-  image: row.image,
-  secondImage: row.second_image || row.image,
-  description: row.description || "",
-  details: row.details || "",
-  fabric: row.fabric || "",
-  bestSeller: Boolean(row.best_seller),
-});
+const isAdminUser = (user) =>
+  !!(user && user.email && ADMIN_ALLOWLIST.includes(user.email.toLowerCase()));
 
-const hydrateProductsFromSupabase = async () => {
+const resolveProductImage = (imageUrl) =>
+  imageUrl && !/^(?:https?:|data:|blob:|\/)/i.test(imageUrl)
+    ? `${import.meta.env.BASE_URL}${imageUrl}`
+    : imageUrl;
+
+const resolveProductTable = async () => {
+  for (const tableName of PRODUCT_TABLE_CANDIDATES) {
+    const { error } = await supabase.from(tableName).select("id").limit(1);
+
+    if (!error) {
+      return tableName;
+    }
+
+    const message = String(error.message || "").toLowerCase();
+    if (
+      !message.includes("does not exist") &&
+      !message.includes("not found") &&
+      !message.includes("schema cache")
+    ) {
+      return tableName;
+    }
+  }
+
+  return null;
+};
+
+const fetchProductsFromTable = async (tableName) => {
   const { data, error } = await supabase
-    .from(PRODUCT_TABLE)
+    .from(tableName)
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (!error) return data || [];
+
+  const errorMessage = String(error.message || "").toLowerCase();
+  if (
+    !errorMessage.includes("created_at") ||
+    !/(column|schema cache)/.test(errorMessage)
+  ) {
+    throw error;
+  }
+
+  console.warn(
+    "The products table has no created_at column yet; apply the product-created-at migration to sort newest products first.",
+  );
+  const fallback = await supabase
+    .from(tableName)
     .select("*")
     .order("name");
 
-  if (error) {
-    console.error("Supabase product fetch failed:", error.message);
-    return;
+  if (fallback.error) throw fallback.error;
+  return fallback.data || [];
+};
+
+const normalizeProduct = (row) => {
+  const toStringList = (value) => {
+    if (Array.isArray(value)) return value.map(String).filter(Boolean);
+    if (typeof value !== "string") return [];
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+      } catch {
+        // Treat non-JSON text as a comma-separated list below.
+      }
+    }
+    return trimmed
+      .replace(/^\{(.*)\}$/, "$1")
+      .split(",")
+      .map((item) => item.trim().replace(/^"(.*)"$/, "$1"))
+      .filter(Boolean);
+  };
+  const badgeText = String(row.badge || "").trim();
+  const newArrival = Boolean(
+    row.new_arrival ||
+    row.is_new ||
+    row.newArrival ||
+    row.bestSeller ||
+    badgeText.toLowerCase().includes("new") ||
+    row.featured_section === "new-arrivals" ||
+    row.show_on === "new-arrivals",
+  );
+  const bestSeller = Boolean(
+    row.best_seller ||
+    row.bestSeller ||
+    row.featured_section === "best-seller" ||
+    row.show_on === "best-seller",
+  );
+
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    createdAt: row.created_at || null,
+    price: Number(row.price || 0),
+    colorNames: toStringList(row.color_names),
+    colors: toStringList(row.colors),
+    sizes: toStringList(row.sizes),
+    badge: badgeText || (newArrival ? "New" : ""),
+    image: resolveProductImage(row.image),
+    secondImage: resolveProductImage(row.second_image || row.image),
+    description: row.description || "",
+    details: row.details || "",
+    fabric: row.fabric || "",
+    bestSeller,
+    newArrival,
+  };
+};
+
+const getCatalogIdentity = (product) => {
+  const category = String(product.category || "").trim().toLowerCase();
+  const rawImage = String(product.image || "").split(/[?#]/, 1)[0];
+  let imageName = rawImage.split("/").pop() || "";
+  try {
+    imageName = decodeURIComponent(imageName);
+  } catch {
+    // Keep the original filename when the URL contains malformed escaping.
+  }
+  if (imageName) return `image:${imageName.toLowerCase()}`;
+
+  const name = String(product.name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return `name:${category}:${name}`;
+};
+
+const mergeCatalogProducts = (savedProducts) => {
+  const merged = [...products];
+  const additionalProducts = [];
+  const indexByIdentity = new Map(
+    merged.map((product, index) => [getCatalogIdentity(product), index]),
+  );
+
+  for (const savedProduct of savedProducts) {
+    const identity = getCatalogIdentity(savedProduct);
+    const existingIndex = indexByIdentity.get(identity);
+    if (existingIndex === undefined) {
+      additionalProducts.push(savedProduct);
+      continue;
+    }
+
+    const suppliedProduct = merged[existingIndex];
+    merged[existingIndex] = {
+      ...suppliedProduct,
+      ...savedProduct,
+      id: suppliedProduct.id,
+    };
   }
 
-  if (!data || !data.length) return;
+  return [...additionalProducts, ...merged];
+};
 
-  products.splice(0, products.length, ...data.map(normalizeProduct));
+const uploadImageToSupabase = async (file) => {
+  if (!file) return "";
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Choose a valid image file.");
+  }
+  if (file.size > 50 * 1024 * 1024) {
+    throw new Error("Image files must be 50 MB or smaller.");
+  }
+
+  const extension = file.name.match(/\.[a-zA-Z0-9]{1,10}$/)?.[0] || "";
+  const safeName = `${crypto.randomUUID()}${extension.toLowerCase()}`;
+  const filePath = `products/${safeName}`;
+
+  const { data, error } = await supabase.storage
+    .from("product-images")
+    .upload(filePath, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+
+  if (error) {
+    console.error("Supabase product image upload failed:", error);
+    const message = error.message || "Unknown storage error.";
+    if (error.message.toLowerCase().includes("row-level security")) {
+      throw new Error(
+        "Supabase blocked this upload. Confirm the signed-in email is allowed by the product-images storage upload policy.",
+      );
+    }
+    if (
+      error.message.toLowerCase().includes("bucket not found") ||
+      error.message.toLowerCase().includes("not found")
+    ) {
+      throw new Error(
+        'The Supabase "product-images" storage bucket was not found. Run the product catalog setup SQL in your Supabase project.',
+      );
+    }
+    throw new Error(`Image upload failed: ${message}`);
+  }
+
+  const { data: publicData } = supabase.storage
+    .from("product-images")
+    .getPublicUrl(data.path);
+
+  return publicData.publicUrl;
+};
+
+const fetchProductCatalog = async () => {
+  const tableName = await resolveProductTable();
+  if (!tableName) {
+    throw new Error("No product table was found in Supabase.");
+  }
+
+  const data = await fetchProductsFromTable(tableName);
+  return mergeCatalogProducts(data.map(normalizeProduct));
 };
 
 const StoreContext = createContext(null);
@@ -79,21 +275,141 @@ const readStorage = (key, fallback) => {
   }
 };
 
+const queuePendingBagItem = (product, size, color, quantity) => {
+  try {
+    sessionStorage.setItem(
+      "simplecott-pending-bag-item",
+      JSON.stringify({ productId: product.id, size, color, quantity }),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+const consumePendingBagItem = () => {
+  try {
+    const raw = sessionStorage.getItem("simplecott-pending-bag-item");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    sessionStorage.removeItem("simplecott-pending-bag-item");
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
 function StoreProvider({ children }) {
-  const [cart, setCart] = useState(() => readStorage("simplecott-cart", []));
+  const [catalog, setCatalog] = useState(products);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [cart, setCart] = useState([]);
+  const [cartOwnerId, setCartOwnerId] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [wishlist, setWishlist] = useState(() =>
     readStorage("simplecott-wishlist", []),
   );
   const [toast, setToast] = useState("");
 
   useEffect(() => {
-    hydrateProductsFromSupabase();
+    let active = true;
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (active) {
+        setUser(session?.user || null);
+        setAuthLoading(false);
+      }
+    });
+
+    supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Could not restore the auth session:", error.message);
+        }
+        setUser(data.session?.user || null);
+        setAuthLoading(false);
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.error("Could not restore the auth session:", error);
+        setAuthLoading(false);
+      });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  useEffect(
-    () => localStorage.setItem("simplecott-cart", JSON.stringify(cart)),
-    [cart],
-  );
+  useEffect(() => {
+    if (authLoading) return;
+    const nextCart = user
+      ? readStorage(`simplecott-cart-${user.id}`, [])
+      : [];
+    setCart(nextCart);
+    setCartOwnerId(user?.id || null);
+  }, [authLoading, user?.id]);
+
+  useEffect(() => {
+    if (!user || cartOwnerId !== user.id || authLoading || !catalogLoaded) return;
+    const pending = consumePendingBagItem();
+    if (!pending) return;
+    const product = catalog.find((item) => item.id === pending.productId);
+    if (!product) {
+      console.error("Could not restore the pending bag item: product not found.");
+      return;
+    }
+
+    setCart((items) => {
+      const existing = items.find(
+        (item) =>
+          item.id === product.id &&
+          item.size === pending.size &&
+          item.color === pending.color,
+      );
+      if (existing) {
+        return items.map((item) =>
+          item === existing
+            ? { ...item, quantity: item.quantity + pending.quantity }
+            : item,
+        );
+      }
+      return [...items, { ...pending, id: product.id }];
+    });
+  }, [authLoading, cartOwnerId, user?.id, catalog, catalogLoaded]);
+
+  useEffect(() => {
+    let active = true;
+    fetchProductCatalog()
+      .then((nextCatalog) => {
+        if (active) {
+          setCatalog(nextCatalog);
+          setCatalogLoaded(true);
+        }
+      })
+      .catch((error) => {
+        console.error("Could not load the Supabase product catalog:", error);
+        if (active) setCatalogLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user || cartOwnerId !== user.id || authLoading) return;
+    try {
+      localStorage.setItem(
+        `simplecott-cart-${user.id}`,
+        JSON.stringify(cart),
+      );
+    } catch (error) {
+      console.error("Could not save the shopping bag:", error);
+    }
+  }, [cart, cartOwnerId, user, authLoading]);
+
   useEffect(
     () => localStorage.setItem("simplecott-wishlist", JSON.stringify(wishlist)),
     [wishlist],
@@ -150,19 +466,35 @@ function StoreProvider({ children }) {
     setToast(saved ? "Removed from your saved pieces" : "Saved for later");
   };
 
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+  };
+
   const value = useMemo(
     () => ({
       cart,
+      catalog,
+      catalogLoaded,
       wishlist,
+      user,
+      authLoading,
       toast,
       setToast,
       setCart,
+      refreshCatalog: async () => {
+        const nextCatalog = await fetchProductCatalog();
+        setCatalog(nextCatalog);
+        setCatalogLoaded(true);
+        return nextCatalog;
+      },
       addToCart,
       updateQuantity,
       toggleWishlist,
+      signOut,
       bagCount: cart.reduce((sum, item) => sum + item.quantity, 0),
     }),
-    [cart, wishlist, toast],
+    [catalog, catalogLoaded, cart, wishlist, user, authLoading, toast],
   );
   return (
     <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
@@ -172,7 +504,7 @@ function StoreProvider({ children }) {
 const useStore = () => useContext(StoreContext);
 
 function Header() {
-  const { bagCount, wishlist } = useStore();
+  const { bagCount, wishlist, user, signOut, setToast } = useStore();
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -192,15 +524,23 @@ function Header() {
     setSearchOpen(false);
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+      setToast("You have been signed out.");
+      navigate("/");
+    } catch (error) {
+      console.error("Could not sign out:", error);
+      setToast("Could not sign out. Please try again.");
+    }
+  };
+
   const links = [
+    ["Home", "/"],
     ["New Arrivals", "/shop?sort=new"],
-    ["Clothing", "/shop"],
-    ["Shirts", "/shop?category=Shirts"],
-    ["Trousers", "/shop?category=Trousers"],
-    ["Outerwear", "/shop?category=Outerwear"],
     ["Collections", "/collections"],
     ["Sale", "/shop?sale=true"],
-    ["Admin", "/admin"],
+    ...(isAdminUser(user) ? [["Admin", "/admin"]] : []),
   ];
 
   const isExactNavMatch = (to) =>
@@ -248,13 +588,24 @@ function Header() {
           >
             <Search />
           </button>
-          <Link
-            className="icon-button account-link"
-            to="/account"
-            aria-label="Account"
-          >
-            <span className="nav-word">Account</span>
-          </Link>
+          {user ? (
+            <button
+              className="icon-button account-link"
+              type="button"
+              onClick={handleSignOut}
+              aria-label={`Sign out ${user.email || "of your account"}`}
+            >
+              <span className="nav-word">Log out</span>
+            </button>
+          ) : (
+            <Link
+              className="icon-button account-link"
+              to="/account"
+              aria-label="Account"
+            >
+              <span className="nav-word">Account</span>
+            </Link>
+          )}
           <Link
             className="icon-button wishlist-link"
             to="/wishlist"
@@ -305,11 +656,60 @@ function Header() {
 }
 
 function Footer() {
+  const [email, setEmail] = useState("");
   const [status, setStatus] = useState("");
-  const submit = (event) => {
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event) => {
     event.preventDefault();
-    setStatus("You’re on the list. (Preview only)");
-    event.currentTarget.reset();
+    setStatus("");
+    setError("");
+    setSubmitting(true);
+
+    const normalizedEmail = email.trim().toLowerCase();
+    try {
+      const { error: subscribeError } = await supabase
+        .from("newsletter_subscribers")
+        .insert({ email: normalizedEmail });
+
+      const alreadySubscribed = subscribeError?.code === "23505";
+      if (subscribeError && !alreadySubscribed) {
+        console.error("Could not save newsletter subscription:", subscribeError);
+        setError(
+          subscribeError.code === "42P01" ||
+            subscribeError.code === "PGRST205"
+            ? "Newsletter signup is not set up yet. Please try again later."
+            : "We couldn’t save your email. Please try again.",
+        );
+        return;
+      }
+
+      const { error: welcomeError } = await supabase.functions.invoke(
+        "newsletter-welcome",
+        { body: { email: normalizedEmail } },
+      );
+      if (welcomeError) {
+        console.error("Could not send newsletter welcome email:", welcomeError);
+        setStatus(
+          "You're subscribed, but we couldn't send the welcome email. Please try again later.",
+        );
+        setEmail("");
+        return;
+      }
+
+      setStatus(
+        alreadySubscribed
+          ? "You're already on the list. Check your inbox for our welcome note."
+          : "Thanks — you're on the list. Check your inbox for a welcome email.",
+      );
+      setEmail("");
+    } catch (subscribeError) {
+      console.error("Newsletter subscription request failed:", subscribeError);
+      setError("We couldn’t save your email. Check your connection and try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <footer className="site-footer">
@@ -328,15 +728,29 @@ function Footer() {
           <input
             id="newsletter-email"
             type="email"
+            name="email"
             required
+            maxLength={254}
             placeholder="Your email address"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            disabled={submitting}
           />
-          <button type="submit" aria-label="Join the newsletter">
-            <ArrowRight />
+          <button
+            type="submit"
+            aria-label="Join the newsletter"
+            disabled={submitting}
+          >
+            {submitting ? "…" : <ArrowRight />}
           </button>
-          <span className="form-message" aria-live="polite">
+          <span className="form-message" aria-live="polite" role="status">
             {status}
           </span>
+          {error && (
+            <span className="form-message error-message" role="alert">
+              {error}
+            </span>
+          )}
         </form>
       </section>
       <div className="footer-main">
@@ -375,15 +789,10 @@ function Footer() {
       </div>
       <div className="footer-bottom">
         <span>© 2026 SIMPLECOTT. MADE FOR THE EVERYDAY.</span>
-        <div className="payment-marks" aria-label="Prototype payment methods">
-          <span>VISA</span>
-          <span>mastercard</span>
-          <span>Verve</span>
-          <span>TRANSFER</span>
+        <div className="payment-marks" aria-label="Order method">
+          <span>WHATSAPP ORDERS</span>
+          <span>PAYMENT CONFIRMED IN CHAT</span>
         </div>
-        <span className="prototype-note">
-          Storefront preview · No real payments
-        </span>
       </div>
     </footer>
   );
@@ -405,14 +814,19 @@ function Toast() {
 
 function Shell({ children }) {
   const location = useLocation();
+  const isFullscreenRoute = location.pathname === "/welcome";
+
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [location.pathname, location.search]);
+
   return (
     <>
-      <Header />
-      <main>{children}</main>
-      <Footer />
+      {!isFullscreenRoute && <Header />}
+      <main className={isFullscreenRoute ? "shell-main fullscreen-route" : "shell-main"}>
+        {children}
+      </main>
+      {!isFullscreenRoute && <Footer />}
       <Toast />
     </>
   );
@@ -435,10 +849,34 @@ function SectionTitle({ title, detail, to, link = "View all" }) {
 }
 
 function ProductCard({ product, index = 0 }) {
-  const { wishlist, toggleWishlist, addToCart } = useStore();
+  const { wishlist, toggleWishlist, addToCart, user } = useStore();
   const [quickOpen, setQuickOpen] = useState(false);
-  const [size, setSize] = useState("M");
+  const [size, setSize] = useState(product.sizes[0] || "");
   const [colorIndex, setColorIndex] = useState(0);
+  const navigate = useNavigate();
+
+  const ensureSignedIn = (
+    source,
+    pendingProduct,
+    pendingSize,
+    pendingColor,
+    pendingQuantity,
+  ) => {
+    if (user) return true;
+    if (pendingProduct) {
+      queuePendingBagItem(
+        pendingProduct,
+        pendingSize,
+        pendingColor,
+        pendingQuantity,
+      );
+    }
+    navigate(
+      `/account?return=${encodeURIComponent("/cart")}&source=${encodeURIComponent(source)}`,
+    );
+    return false;
+  };
+
   return (
     <article className={`product-card product-reveal reveal-${index % 4}`}>
       <div className="product-visual">
@@ -492,12 +930,26 @@ function ProductCard({ product, index = 0 }) {
           )}
           <button
             className="quick-add-button"
-            onClick={() =>
-              quickOpen
-                ? (addToCart(product, size, product.colorNames[colorIndex]),
-                  setQuickOpen(false))
-                : setQuickOpen(true)
-            }
+            onClick={() => {
+              if (!quickOpen) {
+                setQuickOpen(true);
+                return;
+              }
+
+              if (
+                !ensureSignedIn(
+                  "quick-add",
+                  product,
+                  size,
+                  product.colorNames[colorIndex],
+                  1,
+                )
+              )
+                return;
+              addToCart(product, size, product.colorNames[colorIndex]);
+              setQuickOpen(false);
+              navigate("/cart");
+            }}
           >
             {quickOpen ? "Add selected size" : "Quick add"} <Plus size={15} />
           </button>
@@ -549,7 +1001,67 @@ function ProductGrid({
   );
 }
 
+function TraditionalWearGallery() {
+  return (
+    <div className="traditional-groups">
+      {traditionalWear.map((group) => (
+        <article className="traditional-group" key={group.name}>
+          <div className="traditional-group-heading">
+            <h3>{group.name}</h3>
+            <Link
+              className="text-action"
+              to={`/shop?category=${encodeURIComponent(group.name)}`}
+            >
+              Shop {group.name} <ArrowRight size={15} />
+            </Link>
+          </div>
+          <div className="traditional-image-grid">
+            {group.images.map((image) => (
+              <Link
+                className="traditional-image"
+                key={image.src}
+                to={`/shop?category=${encodeURIComponent(group.name)}`}
+                aria-label={`Shop ${group.name}: ${image.alt}`}
+              >
+                <img src={image.src} alt={image.alt} loading="lazy" />
+              </Link>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function SeasonBanner() {
+  return (
+    <section className="season-banner">
+      <img
+        src={resolveProductImage("hero-bg.jpg")}
+        alt="Layered pieces from the Simplecott Autumn collection"
+        loading="lazy"
+      />
+      <div className="season-shade" />
+      <div className="season-copy">
+        <span className="season-brand">
+          SIMPLECOTT <b>/</b> AUTUMN 2026
+        </span>
+        <h2>
+          Built for the city.
+          <br />
+          Designed for everywhere.
+        </h2>
+        <Link to="/collections" className="button button-light">
+          Explore the collection <ArrowRight size={16} />
+        </Link>
+      </div>
+      <span className="season-caption">A NEW SEASON IN GOOD FORM.</span>
+    </section>
+  );
+}
+
 function Home() {
+  const { catalog } = useStore();
   const heroSlides = [
     {
       src: "/hero-bgg.jpg",
@@ -575,6 +1087,7 @@ function Home() {
   ];
 
   const [activeSlide, setActiveSlide] = useState(0);
+  const bestSellerItems = catalog.filter((product) => product.bestSeller);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -659,6 +1172,14 @@ function Home() {
         </div>
       </section>
 
+      <section className="traditional-section page-pad">
+        <SectionTitle
+          title="Traditional, reimagined."
+          detail="A closer look at our Agbada and Senator styles."
+        />
+        <TraditionalWearGallery />
+      </section>
+
       <section id="new-arrivals" className="arrivals-section page-pad">
         <SectionTitle
           title="Just landed."
@@ -666,13 +1187,13 @@ function Home() {
           to="/shop?sort=new"
           link="Shop new arrivals"
         />
-        <ProductGrid items={products.slice(0, 6)} />
+        <ProductGrid items={catalog} />
       </section>
 
       <section className="lookbook-section">
         <div className="lookbook-image-wrap">
           <img
-            src="https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=1800&q=85"
+            src={resolveProductImage("simple collection 1.jpg")}
             alt="Everyday menswear worn with an easy, confident silhouette"
             loading="lazy"
           />
@@ -694,38 +1215,13 @@ function Home() {
         </div>
       </section>
 
-      <section className="season-banner">
-        <img
-          src="https://images.unsplash.com/photo-1523398002811-999ca8dec234?auto=format&fit=crop&w=2200&q=85"
-          alt="Layered pieces from the Simplecott Autumn collection"
-          loading="lazy"
-        />
-        <div className="season-shade" />
-        <div className="season-copy">
-          <span className="season-brand">
-            SIMPLECOTT <b>/</b> AUTUMN 2026
-          </span>
-          <h2>
-            Built for the city.
-            <br />
-            Designed for everywhere.
-          </h2>
-          <Link to="/collections" className="button button-light">
-            Explore the collection <ArrowRight size={16} />
-          </Link>
-        </div>
-        <span className="season-caption">A NEW SEASON IN GOOD FORM.</span>
-      </section>
-
       <section className="bestseller-section page-pad">
         <SectionTitle
           title="The ones you come back to."
           detail="Everyday favourites, on repeat."
           to="/shop"
         />
-        <ProductGrid
-          items={products.filter((product) => product.bestSeller).slice(0, 4)}
-        />
+        <ProductGrid items={bestSellerItems.slice(0, 4)} />
       </section>
 
       <section className="manifesto-section">
@@ -752,7 +1248,7 @@ function Home() {
       <section className="home-lower-pair">
         <Link className="lower-panel lower-panel-image" to="/collections">
           <img
-            src="https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=1400&q=85"
+            src={resolveProductImage("simple collection 2.jpg")}
             alt="A city look, worn your own way"
             loading="lazy"
           />
@@ -776,12 +1272,10 @@ function Home() {
   );
 }
 
-function PageIntro({ title, copy, image: background }) {
+function PageHeading({ title, copy }) {
   return (
-    <section className={`page-intro ${background ? "has-background" : ""}`}>
-      {background && <img src={background} alt="" />}
-      <div className="page-intro-shade" />
-      <div className="page-intro-content">
+    <section className="page-heading">
+      <div className="page-heading-content">
         <h1>{title}</h1>
         {copy && <p>{copy}</p>}
       </div>
@@ -790,6 +1284,7 @@ function PageIntro({ title, copy, image: background }) {
 }
 
 function Shop() {
+  const { catalog } = useStore();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -799,7 +1294,7 @@ function Shop() {
   const [sort, setSort] = useState(
     params.get("sort") === "new" ? "new" : "featured",
   );
-  const [maxPrice, setMaxPrice] = useState(100000);
+  const [maxPrice, setMaxPrice] = useState(250000);
   const [sizes, setSizes] = useState([]);
   const [colors, setColors] = useState([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -810,12 +1305,12 @@ function Shop() {
   }, [location.search, params]);
   const categoryOptions = [
     "All clothing",
-    ...new Set(products.map((product) => product.category)),
+    ...new Set(catalog.map((product) => product.category)),
   ];
   const colorOptions = [
-    ...new Set(products.flatMap((product) => product.colorNames)),
+    ...new Set(catalog.flatMap((product) => product.colorNames)),
   ];
-  const shown = products
+  const shown = catalog
     .filter((product) => {
       const matchesCategory =
         category === "All clothing" || product.category === category;
@@ -843,10 +1338,15 @@ function Shop() {
         : sort === "price-high"
           ? b.price - a.price
           : sort === "new"
-            ? (b.badge.includes("New") ? 1 : 0) -
-              (a.badge.includes("New") ? 1 : 0)
-            : products.indexOf(a) - products.indexOf(b),
+            ? (Date.parse(b.createdAt || "") || 0) -
+                (Date.parse(a.createdAt || "") || 0) ||
+              catalog.indexOf(a) - catalog.indexOf(b)
+            : catalog.indexOf(a) - catalog.indexOf(b),
     );
+  const isSalePage = params.get("sale") === "true";
+  const visibleCount = isSalePage
+    ? catalog.length
+    : shown.length;
 
   const toggle = (values, setValues, value) =>
     setValues(
@@ -857,7 +1357,7 @@ function Shop() {
   const clear = () => {
     setCategory("All clothing");
     setQuery("");
-    setMaxPrice(100000);
+    setMaxPrice(250000);
     setSizes([]);
     setColors([]);
     setSort("featured");
@@ -866,7 +1366,7 @@ function Shop() {
 
   return (
     <div className="shop-page">
-      <PageIntro
+      <PageHeading
         title="Clothing, without the noise."
         copy="Considered pieces for wherever the day takes you."
       />
@@ -911,20 +1411,20 @@ function Shop() {
               className="price-range"
               type="range"
               min="30000"
-              max="100000"
+              max="250000"
               step="5000"
               value={maxPrice}
               onChange={(event) => setMaxPrice(Number(event.target.value))}
             />
             <div className="range-labels">
               <span>₦30,000</span>
-              <span>₦100,000</span>
+              <span>₦250,000</span>
             </div>
           </fieldset>
           <fieldset>
             <legend>Size</legend>
             <div className="size-filters">
-              {["S", "M", "L", "XL"].map((size) => (
+              {["S", "M", "L", "XL", "XXL"].map((size) => (
                 <button
                   key={size}
                   className={sizes.includes(size) ? "selected" : ""}
@@ -959,7 +1459,7 @@ function Shop() {
         <section className="shop-results">
           <div className="shop-toolbar">
             <div>
-              <span className="shop-count">{shown.length} pieces</span>
+              <span className="shop-count">{visibleCount} pieces</span>
               <span className="shop-category-label">{category}</span>
             </div>
             <div className="shop-controls">
@@ -999,13 +1499,14 @@ function Shop() {
               </label>
             </div>
           </div>
-          {params.get("sale") === "true" && (
-            <p className="prototype-banner">
-              Sale preview: no discounted prices have been supplied. Browse all
-              available pieces below.
-            </p>
+          {isSalePage ? (
+            <ProductGrid
+              items={catalog}
+              emptyText="No products are available yet."
+            />
+          ) : (
+            <ProductGrid items={shown} />
           )}
-          <ProductGrid items={shown} />
         </section>
       </div>
       <div
@@ -1018,8 +1519,8 @@ function Shop() {
 
 function ProductPage() {
   const { slug } = useParams();
-  const product = products.find((item) => item.id === slug);
-  const { addToCart, wishlist, toggleWishlist } = useStore();
+  const { catalog, addToCart, wishlist, toggleWishlist, user } = useStore();
+  const product = catalog.find((item) => String(item.id) === slug);
   const navigate = useNavigate();
   const [size, setSize] = useState("");
   const [colorIndex, setColorIndex] = useState(0);
@@ -1036,8 +1537,22 @@ function ProductPage() {
         ?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
+
+    if (!user) {
+      queuePendingBagItem(
+        product,
+        size,
+        product.colorNames[colorIndex],
+        quantity,
+      );
+      navigate(
+        `/account?return=${encodeURIComponent(checkout ? "/checkout" : "/products/" + product.id)}&source=${encodeURIComponent(checkout ? "buy-now" : "add-to-bag")}`,
+      );
+      return;
+    }
+
     addToCart(product, size, product.colorNames[colorIndex], quantity);
-    if (checkout) navigate("/checkout");
+    navigate(checkout ? "/checkout" : "/cart");
   };
 
   return (
@@ -1245,7 +1760,7 @@ function ProductPage() {
           to="/shop"
         />
         <ProductGrid
-          items={products.filter((item) => item.id !== product.id).slice(0, 4)}
+          items={catalog.filter((item) => item.id !== product.id).slice(0, 4)}
         />
       </section>
     </div>
@@ -1255,11 +1770,7 @@ function ProductPage() {
 function Collections() {
   return (
     <div className="collections-page">
-      <PageIntro
-        title="A few good things, together."
-        copy="Collections made for how real days unfold."
-        image="https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=2200&q=85"
-      />
+      <SeasonBanner />
       <section className="collection-index page-pad">
         <SectionTitle
           title="Find your own rhythm."
@@ -1310,7 +1821,7 @@ function Collections() {
 function About() {
   return (
     <div className="about-page">
-      <PageIntro
+      <PageHeading
         title={
           <>
             Less to say.
@@ -1319,7 +1830,6 @@ function About() {
           </>
         }
         copy="SIMPLECOTT makes modern menswear for men who know themselves."
-        image="https://images.unsplash.com/photo-1506629905607-d2f7c1eaa8df?auto=format&fit=crop&w=2200&q=85"
       />
       <section id="philosophy" className="about-opening page-pad">
         <h2>STYLE DOESN'T NEED TO SHOUT.</h2>
@@ -1339,7 +1849,7 @@ function About() {
       </section>
       <section className="about-image-band">
         <img
-          src="https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=2200&q=85"
+          src={resolveProductImage("hero-bg3.jpg")}
           alt="A quiet, confident city look"
           loading="lazy"
         />
@@ -1385,16 +1895,16 @@ function About() {
             NO BIG SPEECH.
           </h2>
           <p>
-            SIMPLECOTT is a work in progress. This storefront is a preview of
-            the world we're building; availability and service details will be
-            shared when we're ready.
+            Browse the Agbada and Senator styles currently available. Send an
+            order through WhatsApp and SIMPLECOTT will confirm availability,
+            delivery, and payment details with you.
           </p>
           <Link to="/shop" className="button button-dark">
             See the pieces <ArrowRight size={16} />
           </Link>
         </div>
         <img
-          src="https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=1400&q=85"
+          src={resolveProductImage("simple collection 3.jpg")}
           alt="Everyday clothing, with space to make it your own"
           loading="lazy"
         />
@@ -1410,13 +1920,14 @@ function About() {
 }
 
 function CartLine({ item }) {
-  const { updateQuantity } = useStore();
-  const product = products.find((piece) => piece.id === item.id);
+  const { catalog, updateQuantity } = useStore();
+  const product = catalog.find((piece) => piece.id === item.id);
   if (!product) return null;
+  const cartImage = product.image;
   return (
     <article className="cart-line">
       <Link to={`/products/${product.id}`} className="cart-line-image">
-        <img src={product.image} alt="" />
+        <img src={cartImage} alt="" />
       </Link>
       <div className="cart-line-info">
         <Link className="cart-line-name" to={`/products/${product.id}`}>
@@ -1472,9 +1983,9 @@ function CartLine({ item }) {
 }
 
 function useCartTotals() {
-  const { cart } = useStore();
+  const { cart, catalog } = useStore();
   const subtotal = cart.reduce((sum, item) => {
-    const product = products.find((piece) => piece.id === item.id);
+    const product = catalog.find((piece) => piece.id === item.id);
     return sum + (product ? product.price * item.quantity : 0);
   }, 0);
   const shipping = subtotal === 0 || subtotal >= 150000 ? 0 : 5000;
@@ -1482,7 +1993,7 @@ function useCartTotals() {
 }
 
 function Cart() {
-  const { cart } = useStore();
+  const { cart, catalog, user } = useStore();
   const { subtotal, shipping } = useCartTotals();
   const [promo, setPromo] = useState("");
   const [promoApplied, setPromoApplied] = useState(false);
@@ -1542,13 +2053,13 @@ function Cart() {
             </div>
             <div className="summary-row">
               <span>
-                Estimated delivery <small>(preview)</small>
+                Estimated delivery
               </span>
               <span>{shipping ? naira(shipping) : "Complimentary"}</span>
             </div>
             {discount > 0 && (
               <div className="summary-row discount-row">
-                <span>Preview code · SIMPLE10</span>
+                <span>Code · SIMPLE10</span>
                 <span>−{naira(discount)}</span>
               </div>
             )}
@@ -1566,7 +2077,7 @@ function Cart() {
               <span className="form-message error-message">{promoError}</span>
               {promoApplied && (
                 <span className="inline-success">
-                  Preview code applied: 10% off.
+                  Code SIMPLE10 applied: 10% off.
                 </span>
               )}
             </form>
@@ -1576,11 +2087,22 @@ function Cart() {
               </span>
               <strong>{naira(subtotal + shipping - discount)}</strong>
             </div>
-            <Link to="/checkout" className="button button-dark checkout-button">
+            <Link
+              to={
+                user
+                  ? promoApplied
+                    ? "/checkout?promo=SIMPLE10"
+                    : "/checkout"
+                  : `/account?return=${encodeURIComponent(
+                      promoApplied ? "/checkout?promo=SIMPLE10" : "/checkout",
+                    )}&source=checkout`
+              }
+              className="button button-dark checkout-button"
+            >
               Continue to checkout <ArrowRight size={16} />
             </Link>
             <p className="checkout-note">
-              Preview checkout · No payment will be taken.
+              Send your order directly to SIMPLECOTT on WhatsApp.
             </p>
           </aside>
         </div>
@@ -1589,7 +2111,7 @@ function Cart() {
         <section className="cart-recommend">
           <SectionTitle title="A good addition." to="/shop" />
           <ProductGrid
-            items={products
+            items={catalog
               .filter((product) => !cart.some((item) => item.id === product.id))
               .slice(0, 3)}
           />
@@ -1600,13 +2122,86 @@ function Cart() {
 }
 
 function Checkout() {
-  const { cart, setCart } = useStore();
+  const { cart, catalog, user, authLoading } = useStore();
   const { subtotal, shipping } = useCartTotals();
-  const [payment, setPayment] = useState("card");
-  const [complete, setComplete] = useState(false);
-  const total = subtotal + shipping;
+  const [busy, setBusy] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+  const [searchParams] = useSearchParams();
+  const promo = searchParams.get("promo") === "SIMPLE10" ? "SIMPLE10" : "";
+  const discount = promo ? Math.round(subtotal * 0.1) : 0;
+  const total = subtotal + shipping - discount;
 
-  if (!cart.length && !complete)
+  const sendOrderToWhatsApp = (event) => {
+    event.preventDefault();
+    setPaymentError("");
+
+    if (!/^\d{8,15}$/.test(OWNER_WHATSAPP_NUMBER)) {
+      setPaymentError("WhatsApp ordering is temporarily unavailable. Please contact SIMPLECOTT.");
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const delivery = Object.fromEntries(formData.entries());
+    const orderReference = `SC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const orderItems = cart
+      .map((item) => {
+        const product = catalog.find((piece) => piece.id === item.id);
+        if (!product) return null;
+        return `• ${product.name} — Qty ${item.quantity}, Size ${item.size}, Color ${item.color} — ${naira(product.price * item.quantity)}`;
+      })
+      .filter(Boolean)
+      .join("\n");
+    const address = [
+      delivery.address,
+      delivery.city,
+      delivery.state,
+      delivery.postcode,
+      delivery.country,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const message = [
+      "Hello SIMPLECOTT, I would like to place this order:",
+      `Order reference: ${orderReference}`,
+      "",
+      "Items:",
+      orderItems || "Order items unavailable",
+      "",
+      `Subtotal: ${naira(subtotal)}`,
+      `Delivery: ${shipping ? naira(shipping) : "Complimentary"}`,
+      ...(discount > 0 ? [`Discount: -${naira(discount)}`] : []),
+      `Estimated total: ${naira(total)}`,
+      "",
+      `Customer: ${delivery.firstName} ${delivery.lastName}`,
+      `Email: ${user.email}`,
+      `Phone: ${delivery.phone}`,
+      `Delivery address: ${address}`,
+      "",
+      "Please confirm availability, delivery timing, and payment details.",
+    ].join("\n");
+
+    setBusy(true);
+    window.location.assign(
+      `https://wa.me/${OWNER_WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`,
+    );
+  };
+
+  if (authLoading)
+    return (
+      <div className="checkout-empty page-pad" role="status">
+        <p>Checking your account…</p>
+      </div>
+    );
+
+  if (!user)
+    return (
+      <Navigate
+        to="/account?return=%2Fcheckout&source=checkout"
+        replace
+      />
+    );
+
+  if (!cart.length)
     return (
       <div className="checkout-empty page-pad">
         <h1>Nothing to check out yet.</h1>
@@ -1616,38 +2211,17 @@ function Checkout() {
         </Link>
       </div>
     );
-  if (complete)
-    return (
-      <div className="checkout-success page-pad">
-        <span className="success-mark">
-          <Check />
-        </span>
-        <h1>That’s the preview.</h1>
-        <p>
-          No order was placed and no payment was taken. Thanks for taking
-          SIMPLECOTT for a spin.
-        </p>
-        <Link to="/shop" className="button button-dark">
-          Keep exploring <ArrowRight size={16} />
-        </Link>
-      </div>
-    );
-
   return (
     <div className="checkout-page page-pad">
       <div className="checkout-heading">
         <Link to="/" className="wordmark">
           SIMPLECOTT<span>®</span>
         </Link>
-        <span>CHECKOUT PREVIEW</span>
+        <span>WHATSAPP ORDER</span>
       </div>
       <form
         className="checkout-layout"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setComplete(true);
-          setCart([]);
-        }}
+        onSubmit={sendOrderToWhatsApp}
       >
         <div className="checkout-fields">
           <Link to="/cart" className="back-link">
@@ -1656,16 +2230,15 @@ function Checkout() {
           <section className="checkout-block">
             <div className="checkout-section-title">
               <h1>Contact details</h1>
-              <Link to="/account">Already have an account?</Link>
+              <span>Signed in as {user?.email}</span>
             </div>
             <label>
               Email address
               <input
                 type="email"
-                name="email"
                 autoComplete="email"
-                required
-                placeholder="you@example.com"
+                value={user?.email || ""}
+                readOnly
               />
             </label>
             <label className="checkbox-row">
@@ -1734,60 +2307,47 @@ function Checkout() {
               <input type="radio" name="delivery" defaultChecked />
               <span>
                 <strong>Standard delivery</strong>
-                <small>Timing and carrier are not yet configured</small>
+                <small>Delivery timing will be confirmed by SIMPLECOTT</small>
               </span>
               <b>{shipping ? naira(shipping) : "Complimentary"}</b>
             </label>
             <p className="checkout-helper">
-              Orders over ₦150,000 qualify for free delivery. Preview estimate
-              only.
+              Orders over ₦150,000 qualify for free delivery.
             </p>
           </section>
           <section className="checkout-block">
-            <h2>Payment</h2>
+            <h2>Place your order</h2>
             <p className="checkout-helper">
-              Select a preview option. No payment details are collected or
-              processed.
+              Your order details will open in a WhatsApp message to SIMPLECOTT.
+              The owner will confirm availability, delivery, and payment with
+              you in the chat.
             </p>
-            <label className="payment-option">
-              <input
-                type="radio"
-                name="payment"
-                checked={payment === "card"}
-                onChange={() => setPayment("card")}
-              />
-              <span>
-                <strong>Card</strong>
-                <small>Preview only · no card details requested</small>
-              </span>
-              <span className="payment-label">VISA · Verve</span>
-            </label>
-            <label className="payment-option">
-              <input
-                type="radio"
-                name="payment"
-                checked={payment === "transfer"}
-                onChange={() => setPayment("transfer")}
-              />
-              <span>
-                <strong>Bank transfer</strong>
-                <small>Preview only · no transfer details issued</small>
-              </span>
-              <span className="payment-label">₦</span>
-            </label>
           </section>
-          <button type="submit" className="button button-dark place-order">
-            Complete demo checkout <ArrowRight size={16} />
+          {paymentError && (
+            <p
+              className="form-message error-message checkout-payment-error"
+              role="alert"
+            >
+              {paymentError}
+            </p>
+          )}
+          <button
+            type="submit"
+            className="button button-dark place-order"
+            disabled={busy}
+          >
+            {busy ? "Opening WhatsApp…" : "Place order on WhatsApp"}
+            {!busy && <ArrowRight size={16} />}
           </button>
           <p className="checkout-disclaimer">
-            This is a non-transactional storefront preview. Submitting this form
-            will not place an order or process a payment.
+            WhatsApp will open with your order prefilled. Review it and tap Send
+            to submit the order.
           </p>
         </div>
         <aside className="checkout-summary">
           <h2>Your order</h2>
           {cart.map((item) => {
-            const product = products.find((piece) => piece.id === item.id);
+            const product = catalog.find((piece) => piece.id === item.id);
             return product ? (
               <div
                 className="checkout-item"
@@ -1815,6 +2375,12 @@ function Checkout() {
             <span>Delivery estimate</span>
             <span>{shipping ? naira(shipping) : "Complimentary"}</span>
           </div>
+          {discount > 0 && (
+            <div className="summary-row discount-row">
+              <span>Code · SIMPLE10</span>
+              <span>−{naira(discount)}</span>
+            </div>
+          )}
           <div className="summary-total">
             <span>
               Total <small>NGN</small>
@@ -1822,7 +2388,7 @@ function Checkout() {
             <strong>{naira(total)}</strong>
           </div>
           <div className="demo-label">
-            <span /> DEMO ONLY · NOT A REAL ORDER
+            <span /> ORDER DIRECTLY WITH SIMPLECOTT
           </div>
         </aside>
       </form>
@@ -1831,8 +2397,8 @@ function Checkout() {
 }
 
 function Wishlist() {
-  const { wishlist } = useStore();
-  const saved = products.filter((product) => wishlist.includes(product.id));
+  const { catalog, wishlist } = useStore();
+  const saved = catalog.filter((product) => wishlist.includes(product.id));
   return (
     <div className="wishlist-page page-pad">
       <div className="cart-page-heading">
@@ -1851,37 +2417,213 @@ function Wishlist() {
 }
 
 function Account() {
-  const [submitted, setSubmitted] = useState(false);
+  const { user, authLoading } = useStore();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const confirmationPending = searchParams.get("confirmed") === "true";
+  const confirmationHandled = useRef(false);
+  const [mode, setMode] = useState(
+    confirmationPending ? "signin" : "signup",
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const returnParam = searchParams.get("return") || "/shop";
+  const returnTo =
+    returnParam.startsWith("/") && !returnParam.startsWith("//")
+      ? returnParam
+      : "/shop";
+
+  useEffect(() => {
+    if (!confirmationPending || authLoading || confirmationHandled.current) {
+    return;
+    }
+
+    confirmationHandled.current = true;
+    let active = true;
+    const finishEmailConfirmation = async () => {
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (!active) return;
+
+    if (signOutError) {
+      console.error(
+        "Email confirmed, but the confirmation session could not be ended:",
+        signOutError.message,
+      );
+      setError(
+        "Your email is confirmed, but we couldn't finish signing you out. Please try again.",
+      );
+      return;
+    }
+
+    setMode("signin");
+    setMessage("Email confirmed. Sign in to continue.");
+    navigate(
+      returnParam === "/shop"
+        ? "/account"
+        : `/account?return=${encodeURIComponent(returnTo)}`,
+      { replace: true },
+    );
+    };
+
+    finishEmailConfirmation().catch((confirmationError) => {
+    if (!active) return;
+    console.error("Could not finish email confirmation:", confirmationError);
+    setError("Your email is confirmed, but sign-in could not be prepared.");
+    });
+
+    return () => {
+    active = false;
+    };
+  }, [
+    authLoading,
+    confirmationPending,
+    navigate,
+    returnParam,
+    returnTo,
+  ]);
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setMessage("");
+
+    const formData = new FormData(event.currentTarget);
+    const email = String(formData.get("email") || "").trim();
+    const password = String(formData.get("password") || "");
+
+    try {
+      const result =
+        mode === "signup"
+          ? await supabase.auth.signUp({
+              email,
+              password,
+              options: {
+                emailRedirectTo: `${window.location.origin}/account?confirmed=true`,
+              },
+            })
+          : await supabase.auth.signInWithPassword({ email, password });
+
+      if (result.error) throw result.error;
+
+      if (!result.data.session) {
+        setMessage(
+          "Check your email for a confirmation link. Once confirmed, sign in to continue.",
+        );
+        setMode("signin");
+        return;
+      }
+
+      navigate(returnTo, { replace: true });
+    } catch (submitError) {
+      console.error("Account authentication failed:", submitError);
+      setError(submitError.message || "Could not complete account access.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (authLoading) {
+    return (
+      <div className="account-page page-pad" role="status">
+        <p>Checking your account…</p>
+      </div>
+    );
+  }
+
+  if (user && !confirmationPending) {
+    return (
+      <div className="account-page page-pad">
+        <span className="account-mark">S/C</span>
+        <h1>Your corner of SIMPLECOTT.</h1>
+        <p>You’re signed in as {user.email}.</p>
+        <Link to={returnTo} className="button button-dark">
+          Continue shopping <ArrowRight size={16} />
+        </Link>
+      </div>
+    );
+  }
+
   return (
     <div className="account-page page-pad">
-      <span className="account-mark">S/C</span>
-      <h1>Your corner of SIMPLECOTT.</h1>
-      <p>
-        Sign in with your email. This preview doesn't create or access real
-        accounts.
-      </p>
-      {submitted ? (
-        <div className="account-feedback">
-          <Check size={17} /> Sign-in isn't connected in this preview. Thanks
-          for stopping by.
-        </div>
-      ) : (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            setSubmitted(true);
+      <div className="account-mode-switch" aria-label="Account access">
+        <button
+          className={mode === "signin" ? "active" : ""}
+          type="button"
+          aria-pressed={mode === "signin"}
+          onClick={() => {
+            setMode("signin");
+            setError("");
+            setMessage("");
           }}
         >
-          <label>
-            Email address
-            <input type="email" required placeholder="you@example.com" />
-          </label>
-          <button className="button button-dark">
-            Continue with email <ArrowRight size={16} />
-          </button>
-        </form>
-      )}
-      <Link to="/shop" className="text-action">
+          Sign in
+        </button>
+        <button
+          className={mode === "signup" ? "active" : ""}
+          type="button"
+          aria-pressed={mode === "signup"}
+          onClick={() => {
+            setMode("signup");
+            setError("");
+            setMessage("");
+          }}
+        >
+          Create account
+        </button>
+      </div>
+      <span className="account-mark">S/C</span>
+      <h1>{mode === "signup" ? "Create your account." : "Welcome back."}</h1>
+      <p>
+        {mode === "signup"
+          ? "Create an account to save your bag and shop with SIMPLECOTT."
+          : "Sign in to access your account and shopping bag."}
+      </p>
+      <form onSubmit={handleSubmit}>
+        <label>
+          Email address
+          <input
+            type="email"
+            name="email"
+            autoComplete="email"
+            required
+            placeholder="you@example.com"
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            name="password"
+            autoComplete={
+              mode === "signup" ? "new-password" : "current-password"
+            }
+            minLength={6}
+            required
+            placeholder="At least 6 characters"
+          />
+        </label>
+        {error && (
+          <p className="form-message error-message" role="alert">
+            {error}
+          </p>
+        )}
+        {message && (
+          <p className="account-feedback" role="status">
+            {message}
+          </p>
+        )}
+        <button className="button button-dark" disabled={busy}>
+          {busy
+            ? "Please wait…"
+            : mode === "signup"
+              ? "Create account"
+              : "Sign in"}
+          {!busy && <ArrowRight size={16} />}
+        </button>
+      </form>
+      <Link to="/shop" className="text-action account-explore-link">
         Explore clothing <ArrowRight size={16} />
       </Link>
     </div>
@@ -1889,9 +2631,11 @@ function Account() {
 }
 
 function Admin() {
-  const initialForm = {
+  const { catalog, refreshCatalog, user } = useStore();
+  const tableName = useRef(null);
+  const defaultForm = {
     name: "",
-    category: "Shirts",
+    category: "Agbada",
     price: "",
     badge: "New",
     image: "",
@@ -1902,15 +2646,39 @@ function Admin() {
     colors: "Black, Cream, Sand",
     colorNames: "Black, Cream, Sand",
     sizes: "S, M, L, XL",
+    newArrival: true,
     bestSeller: true,
   };
-  const [form, setForm] = useState(initialForm);
+  const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [mainImageFile, setMainImageFile] = useState(null);
+  const [secondImageFile, setSecondImageFile] = useState(null);
+  const [productsList, setProductsList] = useState([]);
+  const [editingId, setEditingId] = useState(null);
 
   const updateField = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleLocalFile = (field, event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Choose a valid image file.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setError("Image files must be 50 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+    setError("");
+    if (field === "main") setMainImageFile(file);
+    if (field === "second") setSecondImageFile(file);
   };
 
   const toList = (value) =>
@@ -1919,6 +2687,131 @@ function Admin() {
       .map((item) => item.trim())
       .filter(Boolean);
 
+  const ensureAdminAccess = () => {
+    if (!user) {
+      throw new Error("Please sign in before opening the admin panel.");
+    }
+    if (!isAdminUser(user)) {
+      throw new Error(
+        `Access denied for ${user.email}. Only the allowed admin email can manage products.`,
+      );
+    }
+  };
+
+  const loadProducts = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const table = await resolveProductTable();
+      if (!table) {
+        throw new Error(
+          "No product table was found in Supabase. Create a table named poduct, product, or products.",
+        );
+      }
+      tableName.current = table;
+      const data = await fetchProductsFromTable(table);
+      setProductsList(data.map((product) => ({
+        ...product,
+        colors: Array.isArray(product.colors)
+          ? product.colors
+          : toList(product.colors || ""),
+        color_names: Array.isArray(product.color_names)
+          ? product.color_names
+          : toList(product.color_names || ""),
+        sizes: Array.isArray(product.sizes)
+          ? product.sizes
+          : toList(product.sizes || ""),
+      })));
+    } catch (loadError) {
+      setError(loadError.message || "Could not load products.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    if (!isAdminUser(user)) {
+      setError(
+        `Access denied. Only ${ADMIN_ALLOWLIST[0] || "the configured admin"} can access this page.`,
+      );
+      setLoading(false);
+      return;
+    }
+    loadProducts();
+  }, [user]);
+
+  const resetForm = () => {
+    setForm(defaultForm);
+    setEditingId(null);
+    setMainImageFile(null);
+    setSecondImageFile(null);
+  };
+
+  const handleEdit = (product) => {
+    setEditingId(product.id);
+    setForm({
+      name: product.name || "",
+      category: product.category || "Agbada",
+      price: product.price ?? "",
+      badge: product.badge || "New",
+      image: product.image || "",
+      secondImage: product.second_image || product.image || "",
+      description: product.description || "",
+      details: product.details || "",
+      fabric: product.fabric || "",
+      colors: Array.isArray(product.colors)
+        ? product.colors.join(", ")
+        : String(product.colors || ""),
+      colorNames: Array.isArray(product.color_names)
+        ? product.color_names.join(", ")
+        : String(product.color_names || ""),
+      sizes: Array.isArray(product.sizes)
+        ? product.sizes.join(", ")
+        : String(product.sizes || ""),
+      newArrival: Boolean(
+        product.new_arrival ?? product.is_new ?? product.newArrival ?? true,
+      ),
+      bestSeller: Boolean(product.best_seller ?? product.bestSeller ?? false),
+    });
+    setMessage("");
+    setError("");
+  };
+
+  const handleDelete = async (productId) => {
+    if (!productId) return;
+    const confirmed = window.confirm("Delete this product from the catalog?");
+    if (!confirmed) return;
+
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    try {
+      ensureAdminAccess();
+      const table = tableName.current || (await resolveProductTable());
+      if (!table) {
+        throw new Error("No product table was found in Supabase.");
+      }
+      const { error: deleteError } = await supabase
+        .from(table)
+        .delete()
+        .eq("id", productId);
+      if (deleteError) throw deleteError;
+      await refreshCatalog();
+      setProductsList((current) => current.filter((item) => item.id !== productId));
+      if (editingId === productId) resetForm();
+      setMessage("Product deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message || "Could not delete product.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     setSaving(true);
@@ -1926,35 +2819,70 @@ function Admin() {
     setError("");
 
     try {
+      ensureAdminAccess();
+      const table = tableName.current || (await resolveProductTable());
+      if (!table) {
+        throw new Error(
+          "No product table was found in Supabase. Create a table named poduct, product, or products.",
+        );
+      }
+      tableName.current = table;
+
+      const uploadedMainImage = mainImageFile
+        ? await uploadImageToSupabase(mainImageFile)
+        : form.image.trim();
+      const uploadedSecondImage = secondImageFile
+        ? await uploadImageToSupabase(secondImageFile)
+        : form.secondImage.trim() || uploadedMainImage;
+
       const payload = {
         name: form.name.trim(),
         category: form.category.trim() || "Essentials",
         price: Number(form.price),
-        badge: form.badge.trim() || "New",
-        image: form.image.trim(),
-        second_image: form.secondImage.trim() || form.image.trim(),
+        badge: form.badge.trim() || (form.newArrival ? "New" : ""),
+        image: uploadedMainImage,
+        second_image: uploadedSecondImage,
         description: form.description.trim(),
         details: form.details.trim() || "Designed for everyday wear.",
         fabric: form.fabric.trim() || "Premium cotton blend",
         colors: toList(form.colors),
         color_names: toList(form.colorNames),
         sizes: toList(form.sizes),
+        new_arrival: Boolean(form.newArrival),
         best_seller: Boolean(form.bestSeller),
       };
 
-      if (!payload.name || !payload.image || !Number.isFinite(payload.price)) {
-        throw new Error("Name, image URL, and a valid price are required.");
+      if (
+        !payload.name ||
+        !payload.image ||
+        !Number.isFinite(payload.price) ||
+        payload.price <= 0 ||
+        payload.sizes.length === 0 ||
+        payload.color_names.length === 0
+      ) {
+        throw new Error(
+          "Name, image, a price above zero, at least one size, and at least one colour are required.",
+        );
       }
 
-      const { error: insertError } = await supabase
-        .from(PRODUCT_TABLE)
-        .insert([payload]);
+      if (editingId) {
+        const { error: updateError } = await supabase
+          .from(table)
+          .update(payload)
+          .eq("id", editingId);
+        if (updateError) throw updateError;
+        setMessage("Product updated.");
+      } else {
+        const { error: insertError } = await supabase
+          .from(table)
+          .insert([payload]);
+        if (insertError) throw insertError;
+        setMessage("Product added to the catalog.");
+      }
 
-      if (insertError) throw insertError;
-
-      await hydrateProductsFromSupabase();
-      setForm(initialForm);
-      setMessage("Product saved to the poduct table.");
+      await refreshCatalog();
+      resetForm();
+      await loadProducts();
     } catch (submitError) {
       setError(submitError.message || "Could not save product.");
     } finally {
@@ -1962,15 +2890,42 @@ function Admin() {
     }
   };
 
+  if (!user) {
+    return (
+      <div className="account-page page-pad">
+        <span className="account-mark">S/C</span>
+        <h1>Admin access.</h1>
+        <p>Please sign in to manage products.</p>
+        <Link to="/account" className="button button-dark">
+          Go to account <ArrowRight size={16} />
+        </Link>
+      </div>
+    );
+  }
+
+  if (!isAdminUser(user)) {
+    return (
+      <div className="account-page page-pad">
+        <span className="account-mark">S/C</span>
+        <h1>Access denied.</h1>
+        <p>
+          This admin page is only available for the approved storefront email.
+        </p>
+        <p>{user.email}</p>
+        <Link to="/shop" className="button button-dark">
+          Continue shopping <ArrowRight size={16} />
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="account-page page-pad">
+    <div className="account-page page-pad" style={{ maxWidth: "1200px" }}>
       <span className="account-mark">S/C</span>
       <h1>Admin panel.</h1>
-      <p>Add a product to the live catalog without editing the storefront code.</p>
-      <form
-        onSubmit={handleSubmit}
-        style={{ width: "min(100%, 760px)", textAlign: "left" }}
-      >
+      <p>Manage the product catalog, edit listings, and remove products.</p>
+
+      <form onSubmit={handleSubmit} style={{ width: "min(100%, 760px)", textAlign: "left" }}>
         <div
           style={{
             display: "grid",
@@ -1990,10 +2945,18 @@ function Admin() {
           <label>
             Category
             <input
+              list="catalog-categories"
               value={form.category}
               onChange={(event) => updateField("category", event.target.value)}
-              placeholder="Shirts"
+              placeholder="Agbada or Senator"
             />
+            <datalist id="catalog-categories">
+              {[...new Set(catalog.map((product) => product.category))].map(
+                (category) => (
+                  <option key={category} value={category} />
+                ),
+              )}
+            </datalist>
           </label>
           <label>
             Price (NGN)
@@ -2015,21 +2978,42 @@ function Admin() {
             />
           </label>
           <label style={{ gridColumn: "1 / -1" }}>
-            Main image URL
+            Main image URL or upload
             <input
               value={form.image}
               onChange={(event) => updateField("image", event.target.value)}
               placeholder="https://example.com/product.jpg"
-              required
             />
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => handleLocalFile("main", event)}
+              style={{ marginTop: "10px" }}
+            />
+            {mainImageFile && (
+              <small style={{ display: "block", marginTop: "6px" }}>
+                Selected: {mainImageFile.name}
+              </small>
+            )}
           </label>
           <label style={{ gridColumn: "1 / -1" }}>
-            Secondary image URL
+            Secondary image URL or upload
             <input
               value={form.secondImage}
               onChange={(event) => updateField("secondImage", event.target.value)}
               placeholder="https://example.com/product-alt.jpg"
             />
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => handleLocalFile("second", event)}
+              style={{ marginTop: "10px" }}
+            />
+            {secondImageFile && (
+              <small style={{ display: "block", marginTop: "6px" }}>
+                Selected: {secondImageFile.name}
+              </small>
+            )}
           </label>
           <label style={{ gridColumn: "1 / -1" }}>
             Short description
@@ -2037,16 +3021,7 @@ function Admin() {
               value={form.description}
               onChange={(event) => updateField("description", event.target.value)}
               placeholder="A clean, easy layer for the everyday rhythm."
-              style={{
-                width: "100%",
-                minHeight: "88px",
-                marginTop: "6px",
-                padding: "10px",
-                border: "1px solid #c8c5bc",
-                background: "transparent",
-                resize: "vertical",
-                font: "inherit",
-              }}
+              style={{ width: "100%", minHeight: "88px", marginTop: "6px", padding: "10px", border: "1px solid #c8c5bc", background: "transparent", resize: "vertical", font: "inherit" }}
             />
           </label>
           <label style={{ gridColumn: "1 / -1" }}>
@@ -2055,16 +3030,7 @@ function Admin() {
               value={form.details}
               onChange={(event) => updateField("details", event.target.value)}
               placeholder="Relaxed fit, brushed cotton, tailored finish."
-              style={{
-                width: "100%",
-                minHeight: "96px",
-                marginTop: "6px",
-                padding: "10px",
-                border: "1px solid #c8c5bc",
-                background: "transparent",
-                resize: "vertical",
-                font: "inherit",
-              }}
+              style={{ width: "100%", minHeight: "96px", marginTop: "6px", padding: "10px", border: "1px solid #c8c5bc", background: "transparent", resize: "vertical", font: "inherit" }}
             />
           </label>
           <label>
@@ -2102,6 +3068,14 @@ function Admin() {
           <label style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <input
               type="checkbox"
+              checked={form.newArrival}
+              onChange={(event) => updateField("newArrival", event.target.checked)}
+            />
+            Show in new arrivals
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <input
+              type="checkbox"
               checked={form.bestSeller}
               onChange={(event) => updateField("bestSeller", event.target.checked)}
             />
@@ -2120,13 +3094,159 @@ function Admin() {
           </div>
         )}
 
-        <button className="button button-dark" type="submit" disabled={saving} style={{ marginTop: "18px" }}>
-          {saving ? "Saving..." : "Add product"}
-        </button>
+        <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginTop: "18px" }}>
+          <button className="button button-dark" type="submit" disabled={saving}>
+            {saving ? "Saving..." : editingId ? "Save product" : "Add product"}
+          </button>
+          {editingId && (
+            <button
+              type="button"
+              className="button button-outline-dark"
+              onClick={resetForm}
+              disabled={saving}
+            >
+              Cancel edit
+            </button>
+          )}
+        </div>
       </form>
+
+      <div style={{ marginTop: "32px", width: "min(100%, 760px)" }}>
+        <h2>Current catalog</h2>
+        {loading ? (
+          <p>Loading products…</p>
+        ) : productsList.length === 0 ? (
+          <p>No products found yet.</p>
+        ) : (
+          <div style={{ display: "grid", gap: "12px" }}>
+            {productsList.map((product) => (
+              <div
+                key={product.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr) auto",
+                  gap: "12px",
+                  alignItems: "center",
+                  border: "1px solid #d5d1c8",
+                  padding: "14px 16px",
+                  borderRadius: "12px",
+                }}
+              >
+                <div>
+                  <strong>{product.name}</strong>
+                  <div style={{ color: "#575349", fontSize: "0.9rem" }}>
+                    {product.category} · ₦{Number(product.price || 0).toLocaleString()} · {product.badge || "Product"}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <button type="button" className="text-action" onClick={() => handleEdit(product)}>
+                    Edit
+                  </button>
+                  <button type="button" className="text-action" style={{ color: "#8d2b2b" }} onClick={() => handleDelete(product.id)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <Link to="/shop" className="text-action" style={{ marginTop: "24px" }}>
         Explore clothing <ArrowRight size={16} />
       </Link>
+    </div>
+  );
+}
+
+function EmailCaptureGate() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [email, setEmail] = useState(getCustomerEmail());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const { addToCart, catalog } = useStore();
+
+  const returnTo = searchParams.get("return") || "/shop";
+  const source = searchParams.get("source") || "email-gate";
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    const trimmed = email.trim();
+
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setError(
+        "Please add a valid email so we can keep your bag and updates safe.",
+      );
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    saveCustomerEmail(trimmed);
+
+    const pending = consumePendingBagItem();
+    if (pending) {
+      const product = catalog.find((item) => item.id === pending.productId);
+      if (product) {
+        addToCart(product, pending.size, pending.color, pending.quantity);
+      }
+    }
+
+    await sendLeadToBackend({
+      email: trimmed,
+      source,
+      page: returnTo,
+    });
+    setBusy(false);
+    navigate(returnTo);
+  };
+
+  return (
+    <div
+      className="email-gate"
+      style={{
+        "--email-gate-image": `url("${resolveProductImage("hero-bg.jpg")}")`,
+      }}
+    >
+      <div className="email-gate-content">
+        <div className="email-gate-copy">
+          <span className="account-mark">S/C</span>
+          <h1>
+            A little less noise.
+            <br />A little more you.
+          </h1>
+          <p>
+            We’ll save your bag and send a thoughtful note when the pieces you
+            care about are ready.
+          </p>
+        </div>
+
+        <div className="email-gate-panel">
+          <form onSubmit={handleSubmit} className="email-gate-form">
+            <label>
+              Email address
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                required
+              />
+            </label>
+            {error && (
+              <span className="form-message error-message">{error}</span>
+            )}
+            <button
+              type="submit"
+              className="button button-dark"
+              disabled={busy}
+            >
+              {busy ? "Saving..." : "Continue"}
+            </button>
+          </form>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2158,6 +3278,7 @@ function App() {
           <Route path="/wishlist" element={<Wishlist />} />
           <Route path="/account" element={<Account />} />
           <Route path="/admin" element={<Admin />} />
+          <Route path="/welcome" element={<EmailCaptureGate />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Shell>

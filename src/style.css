@@ -499,6 +499,55 @@ img {
   height: 14px;
 }
 
+.traditional-section {
+  padding-top: 30px;
+  padding-bottom: 95px;
+}
+.traditional-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px;
+}
+.traditional-group {
+  min-width: 0;
+}
+.traditional-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+.traditional-group-heading h3 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 28px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.traditional-group-heading .text-action {
+  white-space: nowrap;
+}
+.traditional-image-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.traditional-image {
+  overflow: hidden;
+  aspect-ratio: 0.82;
+  background: var(--paper-deep);
+}
+.traditional-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.65s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.traditional-image:hover img {
+  transform: scale(1.04);
+}
+
 .arrivals-section {
   padding-top: 31px;
   padding-bottom: 116px;
@@ -1083,60 +1132,23 @@ img {
   text-align: right;
 }
 
-.page-intro {
-  min-height: 335px;
-  position: relative;
-  display: flex;
-  align-items: end;
-  overflow: hidden;
-  padding: 58px max(7%, calc((100vw - 1430px) / 2));
-  background: #e6e3dc;
+.page-heading {
+  padding: 48px max(7%, calc((100vw - 1430px) / 2)) 22px;
 }
-.page-intro.has-background {
-  min-height: 455px;
-  color: white;
-  background: #45453f;
-}
-.page-intro > img,
-.page-intro-shade {
-  position: absolute;
-  inset: 0;
-  height: 100%;
-}
-.page-intro > img {
-  object-fit: cover;
-  object-position: center 39%;
-}
-.page-intro-shade {
-  background: linear-gradient(
-    90deg,
-    rgba(20, 21, 19, 0.63),
-    rgba(20, 21, 19, 0.12)
-  );
-}
-.page-intro-content {
-  position: relative;
-  z-index: 1;
-}
-.page-intro-content h1 {
-  max-width: 900px;
+.page-heading-content h1 {
+  max-width: 800px;
   margin: 0;
   font-family: var(--display);
-  font-size: clamp(56px, 8vw, 106px);
-  line-height: 0.83;
-  letter-spacing: -0.025em;
+  font-size: clamp(38px, 5vw, 68px);
+  line-height: 0.9;
+  letter-spacing: -0.02em;
   font-weight: 600;
   text-transform: uppercase;
 }
-.page-intro-content p {
-  margin: 18px 0 0;
+.page-heading-content p {
+  margin: 14px 0 0;
+  color: var(--muted);
   font-size: 13px;
-}
-.page-intro:not(.has-background) .page-intro-content h1 {
-  max-width: 650px;
-}
-.page-intro:not(.has-background) .page-intro-content p {
-  color: #55564f;
 }
 
 .shop-layout {
@@ -1608,9 +1620,6 @@ img {
   padding-top: 100px;
 }
 
-.collections-page .page-intro {
-  min-height: 570px;
-}
 .collection-index {
   padding-top: 75px;
   padding-bottom: 110px;
@@ -1726,12 +1735,6 @@ img {
   font-size: 12px;
 }
 
-.about-page .page-intro {
-  min-height: 630px;
-}
-.about-page .page-intro-content h1 {
-  max-width: 620px;
-}
 .about-opening {
   display: grid;
   grid-template-columns: 1fr minmax(300px, 0.9fr);
@@ -2360,6 +2363,10 @@ img {
 .checkout-success p {
   margin: 11px 0 20px;
 }
+.checkout-success .checkout-whatsapp-note {
+  max-width: 420px;
+  margin: 12px 0 20px;
+}
 .success-mark {
   display: grid;
   width: 46px;
@@ -2380,6 +2387,34 @@ img {
   padding-bottom: 70px;
   text-align: center;
 }
+.account-mode-switch {
+  display: inline-flex;
+  margin-bottom: 26px;
+  border: 1px solid #c8c5bc;
+}
+.account-mode-switch button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.account-mode-switch button + button {
+  border-left: 1px solid #c8c5bc;
+}
+.account-mode-switch button.active {
+  color: #fff;
+  background: var(--ink);
+}
+.account-mode-switch button:focus-visible {
+  outline: 2px solid var(--olive);
+  outline-offset: 2px;
+}
 .account-mark {
   margin-bottom: 16px;
   font-family: var(--display);
@@ -2387,6 +2422,7 @@ img {
   color: var(--olive);
 }
 .account-page h1 {
+  width: 100%;
   max-width: 500px;
   margin: 0;
   font-family: var(--display);
@@ -2413,6 +2449,117 @@ img {
 }
 .account-page > .text-action {
   margin-top: 24px;
+}
+.shell-main.fullscreen-route {
+  padding: 0;
+}
+
+.email-gate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 100vh;
+  padding: clamp(52px, 7vw, 90px) 0;
+  color: white;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(17, 18, 15, 0.72) 0%,
+      rgba(17, 18, 15, 0.62) 28%,
+      rgba(17, 18, 15, 0.3) 52%,
+      rgba(17, 18, 15, 0.1) 100%
+    ),
+    var(--email-gate-image) center/cover no-repeat;
+}
+.email-gate-content {
+  width: min(100%, 1240px);
+  margin: 0 auto;
+  padding: 0 max(7.2%, calc((100vw - 1450px) / 2));
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  align-items: end;
+  gap: clamp(28px, 4vw, 52px);
+}
+.email-gate-copy {
+  max-width: 700px;
+}
+.email-gate-copy .account-mark {
+  display: inline-block;
+  margin-bottom: 18px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.email-gate-copy h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(58px, 8vw, 126px);
+  line-height: 0.8;
+  letter-spacing: -0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.email-gate-copy p {
+  max-width: 470px;
+  margin: 24px 0 0;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: clamp(12px, 1.2vw, 15px);
+  line-height: 1.8;
+}
+.email-gate-panel {
+  width: min(100%, 420px);
+  margin-left: auto;
+  padding: clamp(22px, 2.8vw, 32px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(20, 22, 19, 0.44);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 22px 60px rgba(11, 10, 9, 0.18);
+}
+.email-gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.email-gate-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.84);
+}
+.email-gate-form input {
+  width: 100%;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: white;
+  padding: 0 16px;
+  font-size: 15px;
+}
+.email-gate-form input::placeholder {
+  color: rgba(255, 255, 255, 0.52);
+}
+.email-gate-form .button {
+  width: 100%;
+  justify-content: center;
+}
+.email-gate-form .error-message {
+  margin-top: -4px;
+}
+
+@media (max-width: 820px) {
+  .email-gate {
+    min-height: 100vh;
+  }
+  .email-gate-content {
+    grid-template-columns: 1fr;
+    padding: 0 max(22px, 6vw);
+  }
+  .email-gate-panel {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 .account-feedback {
   display: flex;
@@ -2701,15 +2848,11 @@ img {
   .footer-bottom {
     flex-wrap: wrap;
   }
-  .page-intro {
-    min-height: 280px;
-    padding: 44px 5%;
+  .page-heading {
+    padding: 38px 5% 18px;
   }
-  .page-intro.has-background {
-    min-height: 380px;
-  }
-  .page-intro-content h1 {
-    font-size: clamp(60px, 10vw, 84px);
+  .page-heading-content h1 {
+    font-size: clamp(38px, 8vw, 62px);
   }
   .shop-layout {
     grid-template-columns: 1fr;
@@ -2790,9 +2933,6 @@ img {
   .detail-info h1 {
     font-size: 48px;
   }
-  .collections-page .page-intro {
-    min-height: 470px;
-  }
   .collection-index {
     padding-top: 66px;
     padding-bottom: 80px;
@@ -2806,9 +2946,6 @@ img {
   .collection-card-3 {
     width: 88%;
     margin-left: 6%;
-  }
-  .about-page .page-intro {
-    min-height: 480px;
   }
   .about-opening {
     gap: 7%;
@@ -2981,6 +3118,20 @@ img {
     left: 12px;
     bottom: 13px;
     font-size: 19px;
+  }
+  .traditional-section {
+    padding-top: 18px;
+    padding-bottom: 58px;
+  }
+  .traditional-groups {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+  .traditional-group-heading h3 {
+    font-size: 25px;
+  }
+  .traditional-image-grid {
+    gap: 7px;
   }
   .arrivals-section {
     padding-top: 17px;
@@ -3220,19 +3371,15 @@ img {
   .prototype-note {
     max-width: 90px;
   }
-  .page-intro {
-    min-height: 245px;
-    padding: 35px 20px;
+  .page-heading {
+    padding: 30px 20px 14px;
   }
-  .page-intro.has-background {
-    min-height: 355px;
+  .page-heading-content h1 {
+    font-size: clamp(35px, 11vw, 56px);
   }
-  .page-intro-content h1 {
-    font-size: clamp(55px, 15vw, 78px);
-  }
-  .page-intro-content p {
+  .page-heading-content p {
     max-width: 290px;
-    margin-top: 13px;
+    margin-top: 10px;
     font-size: 10px;
     line-height: 1.5;
   }
@@ -3351,9 +3498,6 @@ img {
   .related-section {
     padding-top: 65px;
   }
-  .collections-page .page-intro {
-    min-height: 385px;
-  }
   .collection-index {
     padding-top: 55px;
     padding-bottom: 64px;
@@ -3389,9 +3533,6 @@ img {
   }
   .collection-statement p {
     font-size: 10px;
-  }
-  .about-page .page-intro {
-    min-height: 405px;
   }
   .about-opening {
     grid-template-columns: 1fr;
@@ -3579,7 +3720,7 @@ img {
     min-height: 58vh;
   }
   .account-page h1 {
-    font-size: 59px;
+    font-size: clamp(40px, 12vw, 59px);
   }
   .account-page > p {
     font-size: 10px;
